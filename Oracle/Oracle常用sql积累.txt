@@ -1,0 +1,1235 @@
+Oracle查询表空间使用情况 
+
+--自己写的查询表空间的使用情况
+
+	select a.tablespace_name,
+       b.data_files as 数据文件个数,
+       b.total_bytes || 'GB' as "最大空间",
+       round(b.bytes / 1024 / 1024 / 1024, 4) || 'GB' as 当前分配空间GB,
+       round(b.bytes / 1024 / 1024, 4) || 'MB' as 当前分配空间MB,
+       (100 - round(a.bytes / b.total_bytes / (1024 * 1024 * 1024), 4) * 100)||'%' as "未使用%"
+  from (select tablespace_name, sum(bytes) bytes, sum(blocks) blocks
+          from dba_free_space
+         group by tablespace_name) a,
+       
+       (select tablespace_name,
+               count(*) as data_files,
+               round(sum(maxbytes) / 1024 / 1024 / 1024, 4) total_bytes,
+               sum(bytes) bytes,
+               sum(blocks) blocks
+          from dba_data_files
+         group by tablespace_name) b
+ where a.tablespace_name = b.tablespace_name
+ order by a.tablespace_name;
+
+
+
+　--查询表空间使用情况
+　　SELECT UPPER(F.TABLESPACE_NAME) "表空间名",
+　　D.TOT_GROOTTE_MB "表空间大小(M)",
+　　D.TOT_GROOTTE_MB - F.TOTAL_BYTES "已使用空间(M)",
+　　TO_CHAR(ROUND((D.TOT_GROOTTE_MB - F.TOTAL_BYTES) / D.TOT_GROOTTE_MB * 100,2),'990.99') || '%' "使用比",
+　　F.TOTAL_BYTES "空闲空间(M)",
+　　F.MAX_BYTES "最大块(M)"
+　　FROM (SELECT TABLESPACE_NAME,
+　　ROUND(SUM(BYTES) / (1024 * 1024), 2) TOTAL_BYTES,
+　　ROUND(MAX(BYTES) / (1024 * 1024), 2) MAX_BYTES
+　　FROM SYS.DBA_FREE_SPACE
+　　GROUP BY TABLESPACE_NAME) F,
+　　(SELECT DD.TABLESPACE_NAME,
+　　 ROUND(SUM(DD.BYTES) / (1024 * 1024), 2) TOT_GROOTTE_MB
+　　FROM SYS.DBA_DATA_FILES DD
+　　GROUP BY DD.TABLESPACE_NAME) D
+　　WHERE D.TABLESPACE_NAME = F.TABLESPACE_NAME
+　　ORDER BY 1;
+　　--查询表空间的free space
+　　select tablespace_name,
+　　count(*) as extends,
+　　round(sum(bytes) / 1024 / 1024, 2) as MB,
+　　sum(blocks) as blocks
+　　from dba_free_space
+　　group by tablespace_name;
+
+
+　　--查询表空间的总容量
+　　select tablespace_name, sum(bytes) / 1024 / 1024 as MB
+　　from dba_data_files
+　　group by tablespace_name;
+
+
+　　--查询表空间使用率
+　　select total.tablespace_name,
+　　round(total.MB, 2) as Total_MB,
+　　round(total.MB - free.MB, 2) as Used_MB,
+　　round((1 - free.MB / total.MB) * 100, 2) || '%' as Used_Pct
+　　from (select tablespace_name, sum(bytes) / 1024 / 1024 as MB
+　　from dba_free_space
+　　group by tablespace_name) free,
+　　(select tablespace_name, sum(bytes) / 1024 / 1024 as MB
+　　from dba_data_files
+　　group by tablespace_name) total
+　　where free.tablespace_name = total.tablespace_name;
+
+ 
+
+ 
+
+
+1.查找当前表级锁的SQL如下：
+select sess.sid, 
+    sess.serial#, 
+    lo.oracle_username, 
+    lo.os_user_name, 
+    ao.object_name, 
+    lo.locked_mode 
+    from v$locked_object lo, 
+    dba_objects ao, 
+    v$session sess 
+where ao.object_id = lo.object_id and lo.session_id = sess.sid;
+
+2.杀掉锁表进程：
+alter system kill session '436,35123';
+
+3.RAC环境中锁查找：
+SELECT inst_id,DECODE(request,0,'Holder: ','Waiter: ')||sid sess, 
+        id1, id2, lmode, request, type,block,ctime
+FROM GV$LOCK
+WHERE (id1, id2, type) IN
+       (SELECT id1, id2, type FROM GV$LOCK WHERE request>0)
+ORDER BY id1, request;
+   
+
+
+4.监控当前数据库谁在运行什么SQL语句 
+select osuser, username, sql_text  
+from  v$session a, v$sqltext b 
+where  a.sql_address =b.address order by address, piece; 
+
+ 
+
+5.找使用CPU多的用户session 
+select a.sid,spid,status,substr(a.program,1,40) prog, a.terminal,osuser,value/60/100 value 
+from  v$session a,v$process b,v$sesstat c 
+where  c.statistic#=12 and  
+       c.sid=a.sid and  
+       a.paddr=b.addr  
+       order by value desc; 
+
+
+6.查看死锁信息
+SELECT (SELECT username
+          FROM v$session
+         WHERE SID = a.SID) blocker, a.SID, 'is blocking',
+       (SELECT username
+          FROM v$session
+         WHERE SID = b.SID) blockee, b.SID
+  FROM v$lock a, v$lock b
+ WHERE a.BLOCK = 1 AND b.request > 0 AND a.id1 = b.id1 AND a.id2 = b.id2;
+
+
+7.具有最高等待的对象
+SELECT   o.OWNER,o.object_name, o.object_type, a.event,
+         SUM (a.wait_time + a.time_waited) total_wait_time
+    FROM v$active_session_history a, dba_objects o
+   WHERE a.sample_time BETWEEN SYSDATE - 30 / 2880 AND SYSDATE
+     AND a.current_obj# = o.object_id
+GROUP BY o.OWNER,o.object_name, o.object_type, a.event
+ORDER BY total_wait_time DESC;
+
+
+SELECT   a.session_id, s.osuser, s.machine, s.program, o.owner, o.object_name,
+         o.object_type, a.event,
+         SUM (a.wait_time + a.time_waited) total_wait_time
+    FROM v$active_session_history a, dba_objects o, v$session s
+   WHERE a.sample_time BETWEEN SYSDATE - 30 / 2880 AND SYSDATE
+     AND a.current_obj# = o.object_id
+     AND a.session_id = s.SID
+GROUP BY o.owner,
+         o.object_name,
+         o.object_type,
+         a.event,
+         a.session_id,
+         s.program,
+         s.machine,
+         s.osuser
+ORDER BY total_wait_time DESC;
+
+ 
+
+8.查询当前连接会话数
+select s.value,s.sid,a.username
+from 
+v$sesstat S,v$statname N,v$session A
+where 
+n.statistic#=s.statistic# and
+name='session pga memory'
+and s.sid=a.sid
+order by s.value;
+
+ 
+
+9.等待最多的用户
+SELECT   s.SID, s.username, SUM (a.wait_time + a.time_waited) total_wait_time
+    FROM v$active_session_history a, v$session s
+   WHERE a.sample_time BETWEEN SYSDATE - 30 / 2880 AND SYSDATE
+GROUP BY s.SID, s.username
+ORDER BY total_wait_time DESC;
+
+ 
+
+10.等待最多的SQL
+SELECT   a.program, a.session_id, a.user_id, d.username, s.sql_text,
+         SUM (a.wait_time + a.time_waited) total_wait_time
+    FROM v$active_session_history a, v$sqlarea s, dba_users d
+   WHERE a.sample_time BETWEEN SYSDATE - 30 / 2880 AND SYSDATE
+     AND a.sql_id = s.sql_id
+     AND a.user_id = d.user_id
+GROUP BY a.program, a.session_id, a.user_id, s.sql_text, d.username;
+
+ 
+
+11.查看消耗资源最多的SQL
+SELECT hash_value, executions, buffer_gets, disk_reads, parse_calls
+FROM V$SQLAREA
+WHERE buffer_gets > 10000000 OR disk_reads > 1000000
+ORDER BY buffer_gets + 100 * disk_reads DESC;
+
+ 
+
+12.查看某条SQL语句的资源消耗
+SELECT hash_value, buffer_gets, disk_reads, executions, parse_calls
+FROM V$SQLAREA
+WHERE hash_Value = 228801498 AND address = hextoraw('CBD8E4B0'); 
+
+
+13.查询会话执行的实际SQL
+SELECT   a.SID, a.username, s.sql_text
+    FROM v$session a, v$sqltext s
+   WHERE a.sql_address = s.address
+     AND a.sql_hash_value = s.hash_value
+     AND a.status = 'ACTIVE'
+ORDER BY a.username, a.SID, s.piece;
+
+
+14.显示正在等待锁的所有会话
+SELECT * FROM DBA_WAITERS;
+
+
+15.查看oracle正在执行的SQL
+
+select a.program, b.spid, c.sql_text,c.SQL_ID
+  from v$session a, v$process b, v$sqlarea c
+ where a.paddr = b.addr
+   and a.sql_hash_value = c.hash_value
+   and a.username is not null;
+
+
+16.11gR2中查询是否自动收集统计信息
+
+ select client_name,task_name,operation_name,status from dba_autotask_task;
+
+
+
+ --查询磁盘访问高的SQl语句
+select 
+b.username,a.DISK_READS,a.BUFFER_GETS,
+a.EXECUTIONS,a.disk_reads/decode(a.EXECUTIONS,0,1,a.EXECUTIONS) rds_exec_radio,
+a.SQL_TEXT
+ from v$sqlarea a,dba_users b where a.PARSING_USER_ID = b.user_id
+and a.DISK_READS > 100
+and username = 'DGB'
+order by a.DISK_READS desc;
+
+--查询磁盘负载的情况
+
+select name, a.PHYRDS, a.PHYWRTS, a.READTIM, a.WRITETIM
+  from v$filestat a, v$datafile b
+ where a.FILE# = b.FILE#
+ order by a.READTIM desc;
+ 
+--通过移动数据文件来均衡I/O 
+--1.使表空间脱机
+alter tablespace tablespace_name offline;
+--2.将数据文件复制到别的磁盘目录下
+--3.用新的数据文件重命名
+alter database orcl rename file '原数据文件名' to '新数据文件名';
+--4.使表空间重新联机
+alter tablespace tablespace_name online;
+
+17、创建临时表空间
+
+create temporary tablespace user_temp tempfile 'D:\oracle\oradata\user_temp.dbf'
+size 100M autoextend on next 100M  extent management local;
+
+18、创建表空间
+
+create tablespace user datafile 'D:\oracle\oradata\user_temp.dbf'
+size 100M autoextend on next 100M  extent management local;
+
+19、创建用户
+create user user_name identified  by password_
+default tablespace user_data
+temporary tablespace user_temp;
+
+20、为用户授权
+grant connect,resource,dba to user_name;
+
+
+21、从v$sqlarea中查询磁盘IO次数多的SQL语句
+select b.username,--执行语句的用户名
+       a.DISK_READS,--磁盘读次数
+       a.EXECUTIONS,--SQL执行次数
+       a.DISK_READS / decode(a.EXECUTIONS, 0, 1, a.EXECUTIONS) rds_exec_radio,--平均每次执行读磁盘次数
+       a.sql_text   --执行的SQl语句
+  from v$sqlarea a, dba_users b
+ where a.PARSING_USER_ID = b.user_id
+   and a.DISK_READS > 10000
+ order by a.DISK_READS desc；
+ 
+ 22、从v$sqlarea和v$sql中查询糟糕的SQL语句，buffer get多的语句
+ 
+  select *
+   from (select a.SQL_TEXT,
+                address,
+                rank() over(order by buffer_gets desc) as rank_bufgets,
+                to_char(100 * ratio_to_report(buffer_gets) over(), '999.99') pct_bufgets
+           from v$sql a)
+  where rank_bufgets < 11;
+
+   select *
+   from (select a.SQL_TEXT,
+                address,
+                rank() over(order by buffer_gets desc) as rank_bufgets,
+                to_char(100 * ratio_to_report(buffer_gets) over(), '999.99') pct_bufgets
+           from v$sql a)
+  where rank_bufgets < 11;
+
+  23、从V$SESSMETRIC视图中选出当前占用资源的会话
+  查询会显示在定义的时间间隔内(默认为15秒)使用物理读，CPU或逻辑读最多的会话
+  
+  
+  
+  select 
+  to_char(m.END_TIME,'yyyy-mm-dd hh24:mi:ss') e_dttm, --结束时间
+  m.INTSIZE_CSEC/100 ints ,    --时间间隔
+  s.USERNAME,
+  m.SESSION_ID,
+  m.SESSION_SERIAL_NUM,
+  round(m.cpu) cpu100, --CPU 使用100秒
+  m.PHYSICAL_READS,
+  m.LOGICAL_READS,
+  m.PGA_MEMORY,      --SGA  size end of interval
+  m.HARD_PARSES,
+  m.SOFT_PARSES,
+  m.PHYSICAL_READ_PCT,
+  m.LOGICAL_READ_ PCT,
+  s.SQL_ID  
+   from v$sessmetric m ,v$session s
+  where (m.PHYSICAL_READS>100
+  or m.CPU>100
+  or m.LOGICAL_READS > 100
+  ) and m.SESSION_ID = s.SID
+  and m.SESSION_SERIAL_NUM = s.SERIAL#
+  order by m.PHYSICAL_READS desc,m.cpu desc,m.LOGICAL_READS desc;
+  
+  24、创建DBLINK基本语句
+  create public database link mydblink connect to wzjtj 
+ by wzjtj
+	using '(DESCRIPTION=
+		  (ADDRESS_LIST = 
+			(ADDRESS = (PROTOCOL = TCP)(HOST=10.10.100.70)(PORT=1521))
+		  )
+		  (CONNECT_DATA = (SERVICE=DEDICATED)
+		  (SERVICE_NAME = orcl)
+		  )
+
+)';
+
+25、删除DBLINK
+  DROP DATABASE LINK link_name;
+  
+26、访问dblink的表
+
+select * from  T_YG_LINE_NAMEBOARD@mydblink;
+
+
+27、表空间添加数据文件
+
+   Method0:给表空间添加数据文件并且允许最大	
+
+	ALTER TABLESPACE 表空间名
+	ADD DATAFILE '数据文件路径'
+	SIZE 500M
+	AUTOEXTEND 
+	ON NEXT 50M 
+	MAXSIZE UNLIMITED;
+
+   Method1：给表空间增加数据文件
+
+	ALTER TABLESPACE app_data ADD DATAFILE
+	'D:\ORACLE\PRODUCT\10.2.0\ORADATA\EDWTEST\APP03.DBF' SIZE 50M;
+ 
+   Method2：新增数据文件，并且允许数据文件自动增长
+
+	ALTER TABLESPACE app_data ADD DATAFILE
+	'D:\ORACLE\PRODUCT\10.2.0\ORADATA\EDWTEST\APP04.DBF' SIZE 50M
+	AUTOEXTEND ON NEXT 5M MAXSIZE 100M;
+ 
+   Method3：允许已存在的数据文件自动增长
+
+	ALTER DATABASE DATAFILE 'D:\ORACLE\PRODUCT\10.2.0\ORADATA\EDWTEST\APP03.DBF'
+	AUTOEXTEND ON NEXT 5M MAXSIZE 100M;
+ 
+   Method4：手工改变已存在数据文件的大小
+
+	ALTER DATABASE DATAFILE 'D:\ORACLE\PRODUCT\10.2.0\ORADATA\EDWTEST\APP02.DBF'
+	RESIZE 100M;
+
+
+  28、添加注释
+   添加表注释：
+      COMMENT ON table t1 IS '个人信息';
+
+   添加字段注释：
+	
+	comment on column t1.id  is 'id';
+	comment on column t1.nameis '姓名';
+	comment on column t1.age is '年龄';
+
+  29、修改数据库默认字符集
+
+    UTF-8 -> AL32UTF8
+    GBK   -> ZHS16GBK 
+
+    select name ,value$ from props$ where name like '%NLS%';
+
+    update props$ set value$ = 'ZHS16GBK' where name ='NLS_CHARACTERSET'; 
+
+  30、SQLPLUS导入导出表
+    
+    imp dgb/djj@orcl file=d:\daochu.dmp
+
+    imp dgb/djj@127.0.0.1/orcl file=d:\daochu.dmp fromuser=olduser touser=newuser ignore=y rows=y tablespace=mytabspace
+    指定由哪个用户导出的导入哪个用户，导入到哪个表空间，如果是system用户导出的数据文件那么还需要做其他的操作
+    rows的值分为n和y，n表示不导入数据只导入表结构，y则是导入数据，默认为y
+
+    imp dgb/djj@orcl full=y file=file= d:\data\newsmgnt.dmp ignore=y--(ignore就是如果被导入的数据库存在表那么就不报错继续执行)
+	
+  31、创建目录
+  create directory mydir as 'C:\Users\DELL\Desktop\yw_busline_gd_20150819';
+  
+  32、从DBA_HIST_SQlSTAT视图中发现最糟糕的查询
+
+		select 
+		snap_id,
+		disk_reads_delta read_delta,
+		executions_delta exec_delta,
+		disk_reads_delta/decode(executions_delta,0,1,executions_delta) rds_exec_radio,
+		sql_id
+		from dba_hist_sqlstat t where t.disk_reads_delta > 100000
+		order by t.disk_reads_delta desc;
+
+		--select * from v$sqltext where sql_id = '4kzmf960t0u4m';
+		--再查询执行的语句
+		select * from table(dbms_xplan.display_awr('5prkjmm672vph'));
+
+    33、DDL语句并行执行
+
+    create index idx_name on table_name(column_name) local parallel 4;
+
+    34、恢复索引默认的并行度
+
+    alter index index_name noparallel;
+
+    35、查看DDL创建对象的并行度
+
+     select index_name,degree,from dba_indexes where index_name = 'index_name';
+
+    36、批量做测试数据插入测试表
+    create table myTestTable as
+	    select rownum as id,
+	       to_char(sysdate + rownum/24/3600, 'yyyy-mm-dd hh24:mi:ss') as inc_datetime,
+	       trunc(dbms_random.value(0, 100)) as random_id,
+	       dbms_random.string('x', 20) random_string
+	    from dual
+     connect by level <= 100000;
+
+     37、查询表空间下的数据文件
+        select 
+		b.file_name 物理文件名,
+		b.tablespace_name 表空间,
+		b.bytes/1024/1024 大小M,
+		(b.bytes-sum(nvl(a.bytes,0)))/1024/1024  已使用M,
+		substr((b.bytes-sum(nvl(a.bytes,0)))/(b.bytes)*100,1,5)  利用率 
+		from dba_free_space a,dba_data_files b 
+		where a.file_id=b.file_id 
+		group by b.tablespace_name,b.file_name,b.bytes 
+		order by b.tablespace_name;
+	
+	38、查看数据库是否开启自动归档
+	
+        方法一：select dbid,name,log_mode from v$database;
+	方法二: Archive log list;
+
+	关闭自动归档：
+	alter database noarchivelog;
+        查看检查flash recovery area的使用情况,查看archivelog是否已经很大了，--ora-00257错误是archive log空间不足
+
+	select * from V$FLASH_RECOVERY_AREA_USAGE;
+
+	
+	39、查看告警日志(alert log)存在于哪个目录
+	
+	  show parameter background_dump_dest;
+	  
+	  
+	40、查询SCN的方法
+	
+	select current_scn from v$database;
+	
+	select dbms_flashback.get_system_change_number from dual;
+	
+	41、SQl*PLUS工具使用相关
+	
+	1)、打开默认编辑器
+	SQL>ED   --将SQL*PLUS的默认编辑器打开
+	SQL>DEFINE_EDITOR = editor_name --设置默认的编辑器，如linux下VI，window下的notepad，vms中edt
+	
+	2)、spool假脱机文件的使用
+	SQL>SPOOL D:/spool.sql
+	SQL>select * from emp;
+	SQL>spool off
+	
+	3)、SQL命令行下定义变量
+	--普通变量
+	SQL>variable var_name number;
+	SQL>execute :var_name := 10;
+	SQL>begin
+		   :var_name:=20;
+		end;
+		/
+	SQL>print var_name;
+	
+	--游标变量
+	SQL>variable var_cur refcursor;
+	SQL>begin
+		  open var_cur for select ename,sal from emp;
+		end;
+		/
+	SQL>print var_cur;
+	
+	4)、清屏
+	SQL>clear screen;
+	
+	5)、修改用户密码
+	SQL>password new_pwd;
+	
+	6)、执行操作系统命令
+	通过HOST命令执行操作系统的命令
+	SQL>host copy file_name1 file_name2
+	如:
+	SQL>host copy D:\test1.sql D:\test2.sql
+	
+	7)、创建role
+	SQL>create role role_name;
+	为这个role_name赋权限
+	
+	8)、查看所有环境变量，查看所有预定义变量
+	SQL>SHOW ALL
+	SQL>DEFINE
+	
+	9)、设置行的长度
+	SQL>set linesize 200;--默认为80
+	
+	10)、设置SQL提示符
+	SQL>set SQLPROMPT mySQL>
+	
+	11)、显示时间
+	SQL>set time on
+	
+	12)、显示SQL语句执行时间
+	SQL>set timing on
+	
+	13)、设置查询结果的头
+	SQL>ttitle 'EMP'
+	SQL>select * from emp;
+	
+	14)、设置列名称的格式
+	SQL>column ename heading '员工名' justify center --ename为员工名  并且居中显示
+	清除列的格式
+	SQL>column column_name clear;
+	
+	42、Oracle登录取消密码大小写敏感
+	
+	show parameter sec_case_sensitive_logon；
+	
+	将true设置为false就可以
+	
+	alter system set sec_case_sensitive_logon = false;
+	
+	43、nomount模式下能打开的视图
+	nomount是开启实例，pmon，smon等进程都已经启动
+	能访问的数据库视图主要的为：
+	v$instance,v$parameter,v$processe,v$session,v$version,v$option
+	
+	44、mount模式下能打开的视图
+	mount在nomount的基础下，开始加载数据库了，此时能查看到的数据库视图为：
+	v$log，v$logfile，v$database，
+	v$datafile，v$controlfile，v$thread
+
+
+	45、删除用户并且删除用户下的数据比如表
+
+	drop user dgb cascade;
+
+	46、删除表空间
+
+	drop tablespace tbs_name including contents
+	and datafiles cascade constraints;
+
+	drop tablespace tbs01_t including contents and datafiles cascade constraints;
+
+	表示删除表空间时即删除表空间中的数据，也删除操作系统中的数据文件，并且删除与此表空间
+	有约束关系的约束。
+	keep datafiles 表示保留数据文件
+
+	47、创建临时表
+
+	事务级别：
+	create global temporary table temp_table
+	(id int,name_ varchar2(100))
+	on commit delete rows
+	tablesapce temp1;
+
+	回话级别：
+	create global temporary table temp_table
+
+	(id int,name_ varchar2(100))
+	on commit preserve rows
+	tablesapce temp1; 
+
+	48、统计CBC Latch的内存量
+
+	select 
+	to_number(b.addr,'XXXXXXXXXXXXXXXXXXXX')
+	-to_number(a.addr,'XXXXXXXXXXXXXXXXXXXX')||'字节' as 字节
+
+	from (select rownum rid, addr
+	  from v$latch_children
+	 where name = 'cache buffers chains'
+	 order by addr)a,
+	 
+	 (select rownum rid, addr
+	  from v$latch_children
+	 where name = 'cache buffers chains'
+	 order by addr)b
+	 where a.rid = b.rid+1
+	 and rownum <=1;
+
+	 49、使用SCN号查询之前的版本的数据
+
+	 select * from emp as of scn 1535642 where empno = 7369;
+
+	 50、开启快闪恢复区
+
+	 alter database flashback on;
+
+	 需要开启归档，并且在startup mount模式下
+
+	 51、创建统一区大小的表空间
+
+	 create tablespace mytbs01 datafile 'E:\dataora\mytbs01.dbf' size 10M uniform size 1M;
+
+	 使用uniform关键字。
+
+	 52、查看每一行数据存在于哪个数据文件，block号是什么，rowid是什么等
+
+	 select dbms_rowid.rowid_relative_fno(rowid) fno,
+               dbms_rowid.rowid_block_number(rowid) block_id,
+               dbms_rowid.rowid_row_number(rowid) row_id
+          from mytest1;
+
+	 53、确定段头位置和段号
+
+	 select header_file,header_block from dba_segments where segment_name = 'EMP';
+
+	 54、判定数据的命中率
+	 
+	  select 1 - (sum(decode(name, 'physical reads', value, 0)) /
+	       (sum(decode(name, 'db block gets', value, 0)) +
+	       (sum(decode(name, 'consistent gets', 0))))) "Read Hit Ratio"
+	  from v$sysstat;
+
+	  应当保持在95%以上，如果将命中率从98%提高到99%，可能会提高整个系统性能的100%，
+	  但是跟磁盘读引起的原因有关系。
+
+	   select metric_name,
+		 to_char(begin_time, 'yyyy-mm-dd hh24:mi:ss') begin_time,
+		 to_char(end_time, 'yyyy-mm-dd hh24:mi:ss') end_time,
+		 value
+	    from v$sysmetric
+	    where metric_name like 'Buffer Cache Hit Ratio';
+
+         55、判定数据字典的命中率
+
+	    select sum(gets),
+          sum(getmisses),
+          (1 - (sum(getmisses) / (sum(gets) + sum(getmisses)))) * 100 hitrate
+         from v$rowcache;
+
+	 也可以直接查询v$sysmetric视图中的awr信息：
+	 
+	 select metric_name,value from v$sysmetric where metric_name = 'Row Cache Hit Ratio';
+
+	 推荐的命中率是95%或者更高，但是在大量使用同义词的环境中，可能不能超过75%即使共享池巨大，因为Oracle必须查询很多
+	 对象是否存在，而实际上可能不存在。
+
+	 56、判定共享SQl和PLSQL的命中率
+	      select sum(pins) "Executions",sum(pinhits) "Hits",((sum(pinhits)/sum(pins))*100) "PinHitratio",
+	     sum(reloads) "Misses",(sum(pins)/(sum(pins)+sum(reloads)))*100 "RelHitRatio"
+	      from v$librarycache
+
+	 57、找出使用多个会话的用户
+
+	 select username,count(*) from v$session group by username;
+
+
+	 58、查询当前的配置文件
+
+
+	 select substr(profile, 1, 10) profile,
+         substr(resource_name, 1, 30) resource_name,
+         substr(limit, 1, 10) limit
+	from dba_profiles
+	group by substr(profile, 1, 10),
+            substr(resource_name, 1, 30),
+            substr(limit, 1, 10 ;
+
+	 59、查询索引是否被使用
+         
+	 开启对某个索引监控
+	 alter index   MYTEST_IDX_1 monitoring usage; 
+         执行使用索引的SQL语句
+	 select count(object_id) from mytest1;
+         查询视图
+	 select * from v$object_usage;
+	 关闭对某个索引监控
+	 alter index   MYTEST_IDX_1 nomonitoring usage;
+	 执行
+	 select * from v$object_usage;
+	 字段monitoring变为“no”
+
+
+	 60、查询数据库中当前有哪些当前操作和使用的资源
+
+        -- 查询每一个会话当前在执行的SQL
+	 select a.sid, a.USERNAME,b.PIECE, b.SQL_TEXT
+	  from v$session a, v$sqltext b
+	 where a.SQL_ADDRESS = b.ADDRESS
+	   and a.SQL_HASH_VALUE = b.HASH_VALUE
+	 order by a.USERNAME, a.SID, b.PIECE;
+
+         --查询当前操作资源使用情况的
+	 select a.USERNAME,    --用户名称
+	       a.SID,          --session的ID
+               a.STATUS,       --session的状态
+	       b.BLOCK_GETS,   --当前session读取block次数
+	       b.CONSISTENT_GETS,--逻辑读次数
+	       b.PHYSICAL_READS, --物理读次数
+	       b.BLOCK_CHANGES,  --块更改次数
+	       b.CONSISTENT_CHANGES --逻辑更改次数
+	  from v$session a, v$sess_io b
+	 where a.SID = b.SID
+	 order by a.USERNAME;
+
+	 如果有很多用户连接着，那么使用这些语句的开支就会比较大 
+	 
+
+	 61、通过v$sqlarea查询有问题的查询语句
+	  select b.username,
+		a.SQL_TEXT,
+		a.SQL_FULLTEXT,
+		a.DISK_READS,
+		a.BUFFER_GETS,
+		a.EXECUTIONS,
+		round(a.DISK_READS / decode(a.EXECUTIONS, 0, 1, a.EXECUTIONS),4) rds_exec_ratio
+	   from v$sqlarea a, dba_users b
+	  where a.PARSING_USER_ID = b.user_id
+	   -- and a.DISK_READS > 100000
+	    and a.DISK_READS > 1000
+	  order by a.DISK_READS desc;
+
+	 62、查询执行时间很长的SQl语句
+
+	  select sid,serial#,
+	  message,
+	  time_remaining,--剩余时间
+	  sofar          --目前完成了多少
+	  from v$session_longops;
+
+	  监控这些SQL
+
+	    select key,
+		 sql_id,
+		 sql_exec_id,
+		 to_char(max(sql_exec_start), 'yyyy-mm-dd hh24:mi:ss') sql_exec_start,
+		 sql_child_address child_address
+	    from v$sql_monitor
+	   group by key, sql_id, sql_exec_id, sql_child_address
+	   order by sql_exec_id;
+
+	     select p.id,
+		   rpad(' ',p.DEPTH*2)||p.OPERATION operation,
+		   p.OBJECT_NAME object,
+		   p.CARDINALITY card,
+		   p.COST cost,
+		   substr(m.STATUS,1,4) status,
+		   m.OUTPUT_ROWS
+	     from v$sql_plan p,v$sql_plan_monitor m
+		   where p.sql_id = m.SQL_ID
+		   and p.CHILD_ADDRESS = m.SQL_CHILD_ADDRESS
+		   and p.PLAN_HASH_VALUE = m.SQL_PLAN_HASH_VALUE
+		   and p.ID = m.PLAN_LINE_ID
+		   and m.SQL_ID = '6gvch1xu9ca3g'
+		   and m.SQL_EXEC_START = to_date('2015-10-10 10:10:10','yyyy-mm-dd hh24:mi:ss')
+		   order by p.id;
+
+	    必须满足下面的条件，允许时间长的才会在该视图中出现：
+	    并非扫描操作本身必要跨过最少块数的门槛，而是被扫描的对象必须要跨过这道槛：
+	    必须已经运行6秒钟以上而且
+	    是有着多余10000个数据块的表上的全表扫描，或者
+	    是有着多于1000个索引块的索引上的全索引扫描，或者
+	    是哈希连接(至少涉及到20个数据块)
+
+
+	    63、确定锁定问题
+
+	    select /*+ordered */
+	    b.USERNAME,b.SID, b.SERIAL#, d.ID1, a.SQL_TEXT
+	     from v$lock d, v$session b, v$sqltext a
+	    where b.LOCKWAIT = d.KADDR
+	      and a.ADDRESS = b.SQL_ADDRESS
+	      and a.HASH_VALUE = b.SQL_HASH_VALUE;
+
+	    查询哪个用户造成了上面语句的锁定
+
+	       
+	    select /*+ordered */
+	    b.USERNAME,b.SID, b.SERIAL#, d.ID1, a.SQL_TEXT
+	     from v$lock d, v$session b, v$sqltext a
+	    where d.ID1 in(
+		  select /*+ ordered  */ distinct e.id1
+		  from v$lock e,v$session s where s.lockwait = e.kaddr
+	    )
+	      and b.LOCKWAIT = d.KADDR
+	      and a.ADDRESS = b.SQL_ADDRESS
+	      and a.HASH_VALUE = b.SQL_HASH_VALUE
+	      and d.REQUEST=0;
+
+	    /*需要继续查看SQL语句在书上*/
+
+	    杀掉回话
+	    alter system kill  session '11,18';--11为sid 18为serial#
+
+	 64、查询是否有足够多的空闲列表
+
+	  select global_name instance,to_char(sysdate,'FXDay DD,yyyy HH:MI') today from global_name;
+
+	     select (a.COUNT/(b.VALUE+c.VALUE)*100) pct from v$waitstat a, v$sysstat b,v$sysstat c
+         where a.CLASS = 'free list'
+         and b.STATISTIC# = (select STATISTIC# from v$statname where name = 'db block gets' )
+         and c.STATISTIC# = (select t.STATISTIC# from v$statname t where name='consistent gets');
+
+	 如果pct超过1%，就需要增加空闲列表组了
+       
+         65、V$waitstat的解释
+	 V$WAITSTAT displays block contention statistics. This table is only updated when timed statistics are enabled
+	 显示块争用的统计数据。这个表只有定时启用统计数据时更新。
+
+	 66、设置系统的进程数和会话数
+
+	 alter system set processes = 300 scope = spfile;
+
+	 alter system set sessions=335 scope=spfile;
+
+	 67、设置用户的默认表空间
+
+	 alter user dgb default tablespace MYTBS02
+
+	 也可以在用户创建时指定。
+
+
+	 68、查看指定表的索引的相关信息
+
+	    select a.index_name,
+		  a.table_name,
+		  a.partitioned,
+		  b.COLUMN_NAME,
+		  b.COLUMN_POSITION,
+		  a.blevel,
+		  a.leaf_blocks,
+		  a.distinct_keys
+	     from dba_indexes a, dba_ind_columns b
+	    where a.table_name = b.TABLE_NAME
+	      and a.index_name = b.INDEX_NAME
+	      and a.table_name = upper('yw_tgs_vehicle')
+	    order by b.index_name, b.COLUMN_POSITION;
+
+	    --分区索引的相关信息
+	     select a.index_name,
+		  a.table_name,
+		  a.partitioned,
+	          c.partition_name,
+		  b.COLUMN_NAME,
+		  b.COLUMN_POSITION,
+		  a.blevel,
+		  a.leaf_blocks,
+		  a.distinct_keys,
+		  c.leaf_blocks part_leaf,
+		  c.distinct_keys part_dis,
+		  c.num_rows part_rows
+	     from dba_indexes a, dba_ind_columns b,dba_ind_partitions c
+	    where a.table_name = b.TABLE_NAME
+	      and a.index_name = b.INDEX_NAME
+        and a.index_name = c.index_name
+	      and a.table_name = upper('yw_tgs_vehicle')
+	    order by b.index_name, b.COLUMN_POSITION;
+
+
+	 69、查看SQL语句执行的一些指标字段
+
+	  select sql_text,
+	       sql_fulltext,
+	       sql_id,
+	       parse_calls,
+	       FETCHES,
+	       USERS_EXECUTING,
+	       disk_reads,
+	       executions,    --执行次数
+	       buffer_gets,   
+	       rows_processed,--返回的行数
+	       service                                     
+	  from v$sql
+	 where sql_text like 'select * from mytest6%';
+		    
+         70、降低高水位
+
+	 alter table mytest6 move;--不能降低索引的高水位
+
+         --既可以释放表也可以释放索引的空间
+	 alter table mytest6 enable row movement; --设置允许表能被移动
+
+	 alter table mytest6 shrink space;        --收缩表的大小
+
+	 71、分区表的分区操作
+	 --添加分区
+	 alter table table_name add partition p2010 values less than('2010-01-01') tablespace users;
+         --截断
+	 alter table table_name truncate partition p1996;
+         --移动分区
+	 alter table table_name move partition p1995 tablespace mytbs;
+	 --拆分分区
+	 alter table table_name split partition pmax at ('2010-01-01') into
+	 (partition p1999 tablespace users,partition pmax tablespace users);
+	 --交换分区
+	 alter table table_name exchange partition p1995 with table 
+	 --删除分区
+	 alter table table_name drop partition p1996;
+	 --合并分区
+	 alter table table_name merge partitions p1995,pmax into partition pmax;
+
+	 72、查看分区索引的类型
+	 
+	 select table_name, --表名
+	      index_name, --索引名称
+	      partitioning_type,--分区类型 
+	      locality,        --分区范围
+	      alignment        --是否前缀
+	 from user_part_indexes;
+
+	 73、查看系统中索引的访问情况
+
+	 select d.object_name,d.operation,d.options,count(1) from dba_hist_sql_plan d,dba_hist_sqlstat h 
+		where d.object_owner <> 'SYS'
+		and d.object_owner = 'DGB'
+		and d.operation like '%INDEX%'
+		and d.sql_id = h.sql_id
+		group by d.object_name,
+		d.operation,
+		d.options
+		order by 1,2,3; 
+
+	 74、转储控制文件
+
+	 alter database backup controlfile to trace;
+
+	 75、转储控制文件
+	 alter session set events 'immediate trace name controlf level 8';
+
+
+	 76、查看控制文件转储文件的地址
+
+	 select value from v$diag_info where name='Default Trace File';
+
+
+	 77、查看控制文件的内容(创建语句)
+
+	 alter database backup controlfile  to trace as '/u01/app/oracle/ctl.txt';
+
+
+	 78、查看trace跟踪文件的目录地址
+
+	 oradebug  TRACEFILE_NAME
+
+	 79、关闭Oracle的步骤
+	   
+	 --关闭数据库
+	 alter database close;
+
+	 --卸载数据库
+
+	 alter database dismount;
+
+	 --关闭数据库实例
+
+	 shutdown;
+
+	 shutdown命令的参数的解释：
+
+	 shutdown normal;--不允许新的连接，但是需要当前连接的所有用户都退出
+
+	 shutdown immediate;--不允许新的连接，中断当前的事务，未提交的事务全部回滚，
+	                    --不等待连接的用户全部退出，执行检查点，将变更数据全部写到数据文件，不需要实例恢复
+			    --数据库系统繁忙，或者当前有大量事务执行（甚至大事务正在执行），那么可能需要大量的时间
+
+	 shutdown transactional;--不允许新连接，禁止新事务，但允许当前事务完成后再关闭，关闭有immediate一样
+
+	 shutdown abort;    --中断一切，不推荐，可能出现不一致的情况，不能轻易用
+
+
+	 80、解决中文乱码
+	        1.数据库全备
+
+		2.查询当前字符集
+		SQL> select * from nls_database_parameters where parameter='NLS_CHARACTERSET';
+		PARAMETER VALUE
+		---------------------------------------- ----------------------------------------
+		NLS_CHARACTERSET WE8ISO8859P1
+
+		3.关闭数据库
+		SQL> shutdown immediate
+		Database closed.
+		Database dismounted.
+		ORACLE instance shut down.
+
+		4.启动数据库到mount状态
+		SQL> startup mount
+		ORACLE instance started.
+		Total System Global Area 205520896 bytes
+		Fixed Size 1266608 bytes
+		Variable Size 100666448 bytes
+		Database Buffers 100663296 bytes
+		Redo Buffers 2924544 bytes
+		Database mounted.
+
+		5.限制session
+		SQL> alter system enable restricted session;
+		System altered.
+
+		6.查询相关参数并修改
+		SQL> show parameter job_queue_processes; 
+		NAME TYPE VALUE
+		------------------------------------ ----------- ------------------------------
+		job_queue_processes integer 10
+
+		SQL> show parameter aq_tm_processes; 
+		NAME TYPE VALUE
+		------------------------------------ ----------- ------------------------------
+		aq_tm_processes integer 0grant
+
+		SQL> alter system set job_queue_processes=0;
+		System altered.
+
+		7.打开数据库
+		SQL> alter database open;
+		Database altered.
+
+		8.修改字符集
+		SQL> alter database character set ZHS16GBK;
+		alter database character set ZHS16GBK
+		*
+		ERROR at line 1:
+		ORA-12712: new character set must be a superset of old character set
+
+		出现错误提示，新字符集必须是老字符集的超集，也就原来字符集是新字符集的子集，可以再Oracle官方文档上查询字符集包含关系。下面使用Oracle内部命令internal_use，跳过超集检查，生产环境不建议使用此方法。
+
+		SQL> alter database character set internal_use ZHS16GBK; 
+		Database altered.
+
+		9.查询当前字符集
+		SQL> select * from nls_database_parameters where parameter='NLS_CHARACTERSET';
+		PARAMETER VALUE
+		---------------------------------------- ----------------------------------------
+		NLS_CHARACTERSET ZHS16GBK
+
+		10.关闭数据库
+		SQL> shutdown immediate
+		Database closed.
+		Database dismounted.
+		ORACLE instance shut down.
+
+		11.启动数据库到mount状态
+		SQL> startup mount
+		ORACLE instance started.
+		Total System Global Area 205520896 bytes
+		Fixed Size 1266608 bytes
+		Variable Size 100666448 bytes
+		Database Buffers 100663296 bytes
+		Redo Buffers 2924544 bytes
+		Database mounted.
+
+		12.将相关参数改回原来值
+		SQL> alter system set job_queue_processes=10;
+		System altered.
+
+		13.打开数据库
+		SQL> alter database open;
+		Database altered. 
+
+
+	81、数据文件大小限制公式(smallfile tablespace)
+
+	maxinum file size = db_block_size*4194303（2的22次方）
+	限制原因是rowid是22位最多支持(power(2,22)-1)个数据块
+
+
+	82、使索引无效和有效（非分区索引）
+
+	ALTER INDEX indexname DISABLE | ENABLE;
+
+	ALTER INDEX indexname unusable;
+
+	需要使不可用的索引重新可用的方式：
+
+	alter index index_name rebuild tablespace tbs01;--可以重新制定不同的表空间
+
+
+	83、SCN的日期时间的互换函数（9i以后）
+
+	scn_to_time() scn换成时间
+
+	time_to_scn() 时间换成SCN
+
+	84、dump控制文件获取数据库的SCN
+
+	alter session set events 'immediate trace name controlf level 10';
+
+	1 头文件信息
+	2 level1 + 数据库信息+检查点信息
+	3 level2 + 可重用节信息
+	10 level 3
+
+	85、重建索引时收集统计信息
+
+	alter index idx_emp_1 rebuild compute statistics;
+
+	在重建索引期间收集统计信息，可以节约时间。
+
+	86、收集表统计信息时同时收集索引的统计信息
+
+	cascade => true时：收集表信息时会收集索引的统计信息，false时则不会；
+	method_opt 参数可以指定收集哪些字段的统计信息，直方图等，如果cascade=>true的话自动
+	执行默认的for all columns size auto,换句话的意思就是：
+	无论method_opt设置的是什么值，只要cascade是true那么数据库都会收集所有索引的统计信息；
+
+	87、索引为不可用状态时，但是还可以对表操作的原因
+
+	参数skip_unusable_indexes默认为true，会忽略这个索引的存在，相当于向数据库隐藏了这个索引，并且回收索引段
+	show parameter skip_unusable_indexes;
+
+	但是唯一性索引就报废如此，当唯一性索引处于不可用状态时，数据库不允许再DML操作了，因为数据库不确定插入的数据是否违反
+        唯一性约束。
+
+	88、Oracle读取服务器操作系统的参数
+ 
+	show parameter cpu_count  cpu核数
+	show parameter cpu
+
+
+	89、锁定和解锁一个用户
+
+	alter user perfstat account lock;
+
+	alter user perfstat account unlock;
+
+
+	90、用SYS授权X$表给普通用户
+
+	创建一个视图：
+	create or replace x$_bh as select * from x$bh;
+        
+        创建一个同义词
+	create or replace public synonym x$bh for x$_bh;
+	
+	授权普通用户
+	grant select on x$_bh to dgb;
+
+
+	91、获得所有的V$和GV$视图的列表
+	select * from x$kqfvi;
+
+	92、获得组成v$和X$表的所有信息
+
+	select * from v$fixed_view_definition;
+
+	93、获得所有x$表的列表
+
+	select name from v$fixed_table
+	where name like 'X%'
+	order by name;
+
+	94、检查硬解析
+
+	select name,value from v$sysstat
+	where name = 'parse count (total)' or
+	name = 'parse count (hard)';
+
+	硬解析与全部解析的比值就是硬解析率
+
+
+
+
+
+
+
+
+
+
+	  
+
+
+	 
+
+
+  
+
+
+	                                                                                                                                                                                                                                                                                                                                          
+	
+	
+	
+	 
+	
+	
+	
+		
+
+
+
+
+
+
+
+
+
+
