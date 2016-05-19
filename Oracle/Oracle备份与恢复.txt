@@ -1,0 +1,20 @@
+1.20.100.16.55本服务器的备份与恢复
+创建direcoty: 
+create directory DPDATA_EXP as '/oracle/backup/sql';
+grant read, write on DPDATA_EXP	 to system;
+备份(这里新建的direcoty( directory_name: DPDATA_EXP data_pump_dir: /oracle/backup/sql))
+DATE=`date +%Y%m%d`
+expdp system/system123 directory=EXP_DATA schemas=bo dumpfile=bo_$DATE.dmp logfile=bo_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=dibs dumpfile=dibs_$DATE.dmp logfile=dibs_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=ecif dumpfile=ecif_$DATE.dmp logfile=ecif_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=eip dumpfile=eip_$DATE.dmp logfile=eip_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=epay dumpfile=epay_$DATE.dmp logfile=epay_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=ibs dumpfile=ibs_$DATE.dmp logfile=ibs_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=wibs dumpfile=wibs_$DATE.dmp logfile=wibs_$DATE.log
+expdp system/system123 directory=EXP_DATA schemas=wx_mgmt dumpfile=wx_mgmt_$DATE.dmp logfile=wx_mgmt_$DATE.log
+
+恢复（备份信息包含tablespace, user等，在相同表空间备份与恢复时，不需要创建用户，在不同表空间或不同用户恢复时，请需要指明表空间和用户）
+impdp system/system123 directory=EXP_DATA dumpfile=bo_20160518.dmp logfile=bo_20160518.dmp.log schemas=bo
+2.在不同表空间下恢复
+impdp system/system123 directory=DPDATA_EXP dumpfile=bo_20160518.dmp logfile=bo_20160518.dmp.log remap_schema=bo:bo remap_tablespace=MCATBS:APP_DATA
+remap_schema中第一个bo为备份中的用户，第二个bo为要导入数据的用户；remap_tablespace中MCATBS:APP为备份中的表空间，APP_DATA为要导入数据的表空间
